@@ -9,10 +9,26 @@ const COMPARE_CURRENCIES = ["EUR", "GBP", "JPY", "INR", "CAD", "AUD", "CHF", "CN
 // ---------- Helpers ----------
 const $ = (id) => document.getElementById(id);
 
-async function fetchJSON(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+async function fetchJSON(url, options) {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+        let detail = "";
+        try { detail = (await res.json()).error || ""; } catch (_) { /* ignore */ }
+        throw new Error(detail || `Request failed: ${res.status}`);
+    }
     return res.json();
+}
+
+function postJSON(url, body) {
+    return fetchJSON(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+}
+
+function deleteRequest(url) {
+    return fetchJSON(url, { method: "DELETE" });
 }
 
 function fillSelect(selectEl, currencies, defaultValue) {
@@ -35,6 +51,14 @@ function fmt(n, digits = 2) {
     });
 }
 
+function timeAgo(unix) {
+    const seconds = Math.floor(Date.now() / 1000 - unix);
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+}
+
 // ---------- State ----------
 let historyChart = null;
 
@@ -44,13 +68,81 @@ async function refreshStats() {
         const data = await fetchJSON("/api/stats");
         $("stats-strip").innerHTML = `
             <span class="stat-pill">Cache hit rate <strong>${data.cache.hit_rate_pct}%</strong></span>
-            <span class="stat-pill">Cache hits <strong>${data.cache.hits}</strong></span>
-            <span class="stat-pill">Cache misses <strong>${data.cache.misses}</strong></span>
             <span class="stat-pill">Conversions <strong>${data.conversions_logged}</strong></span>
+            <span class="stat-pill">Watchlist <strong>${data.watchlist_size}</strong></span>
+            <span class="stat-pill">Alerts active <strong>${data.alerts_active}</strong></span>
+            <span class="stat-pill">Alerts triggered <strong>${data.alerts_triggered}</strong></span>
         `;
     } catch (err) {
-        // Silent - stats strip is optional.
+        // Silent.
     }
+}
+
+// ---------- Watchlist ----------
+async function loadWatchlist() {
+    const listEl = $("watchlist-list");
+    try {
+        const data = await fetchJSON("/api/watchlist");
+        const items = data.items || [];
+        if (!items.length) {
+            listEl.innerHTML = `<span class="subtitle">Your watchlist is empty. Convert a currency below and click the star to pin it.</span>`;
+            return;
+        }
+        listEl.innerHTML = "";
+        items.forEach((it) => {
+            const cell = document.createElement("div");
+            cell.className = "watch-cell";
+            const rateText = it.error
+                ? `<span class="error">${it.error}</span>`
+                : `${fmt(it.rate, 4)}`;
+            cell.innerHTML = `
+                <div class="watch-pair">${it.from} -> ${it.to}</div>
+                <div class="watch-rate">${rateText}</div>
+                <button class="watch-remove" title="Remove from watchlist" data-from="${it.from}" data-to="${it.to}">&times;</button>
+            `;
+            listEl.appendChild(cell);
+        });
+        listEl.querySelectorAll(".watch-remove").forEach((btn) =>
+            btn.addEventListener("click", async (e) => {
+                const f = e.currentTarget.dataset.from;
+                const t = e.currentTarget.dataset.to;
+                await deleteRequest(`/api/watchlist/${f}/${t}`);
+                loadWatchlist();
+                refreshStats();
+            })
+        );
+    } catch (err) {
+        listEl.innerHTML = `<span class="error">Failed to load watchlist: ${err.message}</span>`;
+    }
+}
+
+async function handleAddToWatchlist() {
+    const from = $("from-currency").value;
+    const to = $("to-currency").value;
+    if (from === to) {
+        flashWatchButton("Pick different currencies", true);
+        return;
+    }
+    try {
+        await postJSON("/api/watchlist", { from, to });
+        flashWatchButton(`Added ${from} -> ${to}`);
+        loadWatchlist();
+        refreshStats();
+    } catch (err) {
+        flashWatchButton(err.message, true);
+    }
+}
+
+function flashWatchButton(msg, isError = false) {
+    const btn = $("watch-button");
+    const original = btn.innerHTML;
+    btn.innerHTML = msg;
+    btn.classList.toggle("error-flash", isError);
+    btn.classList.toggle("success-flash", !isError);
+    setTimeout(() => {
+        btn.innerHTML = original;
+        btn.classList.remove("error-flash", "success-flash");
+    }, 1800);
 }
 
 // ---------- Live rates table ----------
@@ -91,6 +183,28 @@ function getComparedTargets() {
     ).map((el) => el.value);
 }
 
+async function loadInsight(from, to) {
+    const badge = $("insight-badge");
+    if (from === to) {
+        badge.innerHTML = "";
+        return;
+    }
+    try {
+        const data = await fetchJSON(`/api/insight?from=${from}&to=${to}`);
+        if (!data.message) {
+            badge.innerHTML = "";
+            return;
+        }
+        const cls = data.verdict === "good" ? "insight-good"
+            : data.verdict === "wait" ? "insight-wait"
+            : "insight-neutral";
+        badge.className = `insight-badge ${cls}`;
+        badge.innerHTML = `<strong>Insight:</strong> ${data.message}`;
+    } catch (_) {
+        badge.innerHTML = "";
+    }
+}
+
 async function handleConvert(event) {
     event.preventDefault();
     const amount = $("amount").value;
@@ -117,7 +231,7 @@ async function handleConvert(event) {
                     ${fmt(data.amount)} ${data.from_currency}
                     =
                     <strong>${fmt(primary.converted)} ${primary.to}</strong>
-                    <span class="subtitle">(rate: ${fmt(primary.rate, 6)}${data.date ? ` · ${data.date}` : ""})</span>
+                    <span class="subtitle">(rate: ${fmt(primary.rate, 6)}${data.date ? ` &middot; ${data.date}` : ""})</span>
                 </div>
             `;
         }
@@ -134,8 +248,7 @@ async function handleConvert(event) {
         }
         resultEl.innerHTML = html;
 
-        // Refresh dependent panels - conversions feed Popular Pairs, and a fresh
-        // /api/convert call moves the cache stats too.
+        loadInsight(from, primaryTo);
         loadRecent();
         refreshStats();
     } catch (err) {
@@ -186,7 +299,7 @@ async function loadRecent() {
             popularEl.innerHTML = `<span class="subtitle">No conversions yet. Try converting above.</span>`;
         } else {
             popularEl.innerHTML = data.popular
-                .map((p) => `<span class="popular-pill">${p.pair.replace("->", " → ")}<span class="count">${p.count}</span></span>`)
+                .map((p) => `<span class="popular-pill">${p.pair.replace("->", " &rarr; ")}<span class="count">${p.count}</span></span>`)
                 .join("");
         }
 
@@ -197,14 +310,71 @@ async function loadRecent() {
             recentEl.innerHTML = data.recent
                 .map((r) => `
                     <div class="recent-row">
-                        <span>${fmt(r.amount)} ${r.from} → ${fmt(r.converted)} ${r.to}</span>
+                        <span>${fmt(r.amount)} ${r.from} &rarr; ${fmt(r.converted)} ${r.to}</span>
                         <span class="subtitle">rate ${fmt(r.rate, 4)}</span>
                     </div>
                 `)
                 .join("");
         }
+    } catch (err) { /* silent */ }
+}
+
+// ---------- Rate Alerts ----------
+async function handleCreateAlert(event) {
+    event.preventDefault();
+    const body = {
+        from: $("alert-from").value,
+        to: $("alert-to").value,
+        op: $("alert-op").value,
+        threshold: parseFloat($("alert-threshold").value),
+    };
+    try {
+        await postJSON("/api/alerts", body);
+        $("alert-threshold").value = "";
+        loadAlerts();
+        refreshStats();
     } catch (err) {
-        // Silent failure - recent list is non-critical.
+        alert(`Could not create alert: ${err.message}`);
+    }
+}
+
+async function loadAlerts() {
+    const listEl = $("alerts-list");
+    try {
+        const data = await fetchJSON("/api/alerts");
+        const items = data.alerts || [];
+        if (!items.length) {
+            listEl.innerHTML = `<span class="subtitle">No active alerts.</span>`;
+            return;
+        }
+        listEl.innerHTML = "";
+        items.forEach((a) => {
+            const triggered = !!a.triggered_at;
+            const cls = triggered ? "alert-row triggered" : "alert-row";
+            const status = triggered
+                ? `<span class="alert-status triggered">Triggered ${timeAgo(a.triggered_at)} at rate ${fmt(a.last_rate, 4)}</span>`
+                : `<span class="alert-status active">Watching${a.last_rate != null ? ` &middot; last seen ${fmt(a.last_rate, 4)}` : ""}</span>`;
+            const cell = document.createElement("div");
+            cell.className = cls;
+            cell.innerHTML = `
+                <div class="alert-rule">
+                    <strong>${a.from} &rarr; ${a.to}</strong>
+                    ${a.op} ${fmt(a.threshold, 4)}
+                </div>
+                ${status}
+                <button class="alert-remove" data-id="${a.id}" title="Delete alert">&times;</button>
+            `;
+            listEl.appendChild(cell);
+        });
+        listEl.querySelectorAll(".alert-remove").forEach((btn) =>
+            btn.addEventListener("click", async (e) => {
+                await deleteRequest(`/api/alerts/${e.currentTarget.dataset.id}`);
+                loadAlerts();
+                refreshStats();
+            })
+        );
+    } catch (err) {
+        listEl.innerHTML = `<span class="error">Failed to load alerts: ${err.message}</span>`;
     }
 }
 
@@ -233,7 +403,7 @@ async function loadHistory() {
             data: {
                 labels,
                 datasets: [{
-                    label: `${from} → ${to}`,
+                    label: `${from} -> ${to}`,
                     data: values,
                     borderColor: "#4f8cff",
                     backgroundColor: "rgba(79, 140, 255, 0.15)",
@@ -244,9 +414,7 @@ async function loadHistory() {
             },
             options: {
                 responsive: true,
-                plugins: {
-                    legend: { labels: { color: "#e6edf6" } },
-                },
+                plugins: { legend: { labels: { color: "#e6edf6" } } },
                 scales: {
                     x: { ticks: { color: "#8aa0c2" }, grid: { color: "#2a3550" } },
                     y: { ticks: { color: "#8aa0c2" }, grid: { color: "#2a3550" } },
@@ -263,36 +431,43 @@ async function init() {
     try {
         const currencies = await fetchJSON("/api/currencies");
 
-        // Populate every dropdown with sensible defaults.
         fillSelect($("from-currency"), currencies, "USD");
         fillSelect($("to-currency"), currencies, "EUR");
         fillSelect($("base-currency"), currencies, "USD");
         fillSelect($("movers-base"), currencies, "USD");
         fillSelect($("hist-from"), currencies, "USD");
         fillSelect($("hist-to"), currencies, "EUR");
+        fillSelect($("alert-from"), currencies, "USD");
+        fillSelect($("alert-to"), currencies, "EUR");
 
         buildCompareCheckboxes();
 
         // Wire events.
         $("convert-form").addEventListener("submit", handleConvert);
+        $("watch-button").addEventListener("click", handleAddToWatchlist);
         $("base-currency").addEventListener("change", (e) => loadRates(e.target.value));
         $("movers-base").addEventListener("change", loadMovers);
         $("movers-days").addEventListener("change", loadMovers);
+        $("alert-form").addEventListener("submit", handleCreateAlert);
         ["hist-from", "hist-to", "hist-days"].forEach((id) =>
             $(id).addEventListener("change", loadHistory)
         );
 
-        // First load - run in parallel.
+        // First load.
         await Promise.all([
+            loadWatchlist(),
             loadRates("USD"),
             loadHistory(),
             loadMovers(),
             loadRecent(),
+            loadAlerts(),
             refreshStats(),
         ]);
 
-        // Auto-refresh stats every 5s so cache panel feels alive.
+        // Auto-refresh.
         setInterval(refreshStats, 5000);
+        setInterval(loadAlerts, 15000);     // surface triggered alerts within ~15s
+        setInterval(loadWatchlist, 60000);  // refresh watchlist rates each minute
     } catch (err) {
         console.error("Initialization failed", err);
         document.body.insertAdjacentHTML(

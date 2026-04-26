@@ -10,12 +10,17 @@ Features:
   - Top Movers: biggest currency movers vs. a base over a window
   - Recent Conversions log (in-memory ring buffer) + popular pairs
   - In-memory TTL cache for upstream calls with hit/miss counters
+  - Watchlist of pinned currency pairs (in-memory, single tenant)
+  - "Best time to convert" insight (current rate vs 30-day average)
+  - Rate Alerts: background poller triggers alerts when thresholds cross
   - /api/stats exposes cache + log counters (used by the frontend)
   - /metrics exposes Prometheus-formatted metrics for scraping
 """
 
+import os
 import threading
 import time
+import uuid
 from collections import Counter, deque
 from datetime import date, timedelta
 
@@ -42,11 +47,12 @@ CACHE_TTL_SECONDS = 60
 # Maximum recent conversions retained in memory.
 RECENT_CONVERSIONS_MAX = 100
 
+# Background alert checker poll interval (seconds).
+ALERTS_POLL_SECONDS = 60
+
 
 # ---------------------------------------------------------------------------
-# Prometheus metrics. These are Counters (only go up) and Histograms (record
-# distributions). Prometheus scrapes /metrics every few seconds and stores them.
-# Grafana then queries Prometheus to draw dashboards.
+# Prometheus metrics.
 # ---------------------------------------------------------------------------
 HTTP_REQUESTS = PromCounter(
     "currencyflow_http_requests_total",
@@ -81,6 +87,12 @@ UPSTREAM_LATENCY = Histogram(
     "Latency of calls to the Frankfurter upstream API.",
 )
 
+ALERTS_TRIGGERED = PromCounter(
+    "currencyflow_alerts_triggered_total",
+    "Total rate alerts that have triggered since startup.",
+    ["from_currency", "to_currency", "op"],
+)
+
 
 # ---------------------------------------------------------------------------
 # Thread-safe TTL cache for upstream responses.
@@ -92,8 +104,6 @@ class TTLCache:
         self.ttl = ttl_seconds
         self._store: dict = {}
         self._lock = threading.Lock()
-        # Internal counters mirror the Prometheus counters so /api/stats can
-        # read them directly without poking Prometheus internals.
         self.hits = 0
         self.misses = 0
 
@@ -133,6 +143,15 @@ cache = TTLCache(CACHE_TTL_SECONDS)
 recent_conversions: deque = deque(maxlen=RECENT_CONVERSIONS_MAX)
 conversions_lock = threading.Lock()
 
+# Watchlist of (from, to) tuples and rate alerts. In-memory, single tenant.
+# Both rely on gunicorn running with --workers 1 --threads N to keep one
+# shared memory space; multi-worker setups would split this state.
+watchlist: set = set()
+watchlist_lock = threading.Lock()
+
+alerts: dict = {}  # alert_id -> alert dict
+alerts_lock = threading.Lock()
+
 
 def _fetch_json(path: str, params: dict | None = None) -> dict:
     """Call Frankfurter and return JSON. Raises on HTTP errors."""
@@ -159,8 +178,6 @@ def _start_timer():
 
 @app.after_request
 def _record_metrics(response):
-    # url_rule.rule gives us the route pattern (e.g. "/api/rates") instead of
-    # the literal URL - keeps label cardinality bounded.
     endpoint = request.url_rule.rule if request.url_rule else request.path
     elapsed = time.time() - getattr(g, "start_time", time.time())
     HTTP_LATENCY.labels(endpoint=endpoint).observe(elapsed)
@@ -173,33 +190,25 @@ def _record_metrics(response):
 
 
 # ---------------------------------------------------------------------------
-# Page route - serves the dashboard HTML
+# Page route + health + metrics
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    """Render the main dashboard page."""
     return render_template("index.html")
 
 
-# ---------------------------------------------------------------------------
-# Health check - useful for Docker, Jenkins, monitoring later on
-# ---------------------------------------------------------------------------
 @app.route("/health")
 def health():
     return jsonify(status="ok"), 200
 
 
-# ---------------------------------------------------------------------------
-# Prometheus scrape endpoint
-# ---------------------------------------------------------------------------
 @app.route("/metrics")
 def metrics():
-    """Expose all registered Prometheus metrics in text format."""
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 # ---------------------------------------------------------------------------
-# JSON API endpoints (consumed by the frontend)
+# JSON API endpoints
 # ---------------------------------------------------------------------------
 @app.route("/api/currencies")
 def list_currencies():
@@ -210,10 +219,7 @@ def list_currencies():
 
 @app.route("/api/rates")
 def latest_rates():
-    """
-    Return the latest rates for a base currency.
-    Query params: ?base=USD  (default USD)
-    """
+    """Return the latest rates for a base currency. Query: ?base=USD"""
     base = request.args.get("base", "USD").upper()
     data = cache.get_or_fetch(
         f"latest:{base}",
@@ -224,13 +230,7 @@ def latest_rates():
 
 @app.route("/api/convert")
 def convert():
-    """
-    Convert an amount from one currency to one or many target currencies.
-    Query params:
-      from   = source currency (default USD)
-      to     = comma-separated target currencies (default EUR)
-      amount = numeric amount (default 1)
-    """
+    """Convert an amount from one currency to one or many target currencies."""
     from_currency = request.args.get("from", "USD").upper()
     to_param = request.args.get("to", "EUR")
     amount_raw = request.args.get("amount", "1")
@@ -271,7 +271,6 @@ def convert():
             continue
         results.append({"to": to_c, "rate": rate, "converted": rate * amount})
 
-    # Log each successful conversion to the recent buffer + Prometheus counter.
     timestamp = time.time()
     with conversions_lock:
         for r in results:
@@ -299,10 +298,7 @@ def convert():
 
 @app.route("/api/history")
 def history():
-    """
-    Return historical exchange rates between two currencies.
-    Query params: ?from=USD&to=EUR&days=30  (default 30)
-    """
+    """Return historical exchange rates between two currencies."""
     from_currency = request.args.get("from", "USD").upper()
     to_currency = request.args.get("to", "EUR").upper()
     days_raw = request.args.get("days", "30")
@@ -325,10 +321,7 @@ def history():
 
 @app.route("/api/movers")
 def movers():
-    """
-    Return the biggest currency movers against a base over a window.
-    Query params: ?base=USD&days=7  (default USD, 7 days)
-    """
+    """Return the biggest currency movers against a base over a window."""
     base = request.args.get("base", "USD").upper()
     days_raw = request.args.get("days", "7")
 
@@ -395,13 +388,278 @@ def recent_conversions_endpoint():
 
 @app.route("/api/stats")
 def stats():
-    """Internal stats - cache + conversion counters (used by the frontend)."""
+    """Internal stats - cache + conversion + watchlist + alerts counters."""
     with conversions_lock:
         conv_count = len(recent_conversions)
+    with watchlist_lock:
+        watchlist_size = len(watchlist)
+    with alerts_lock:
+        active = sum(1 for a in alerts.values() if not a["triggered_at"])
+        triggered = sum(1 for a in alerts.values() if a["triggered_at"])
     return jsonify(
         cache=cache.stats(),
         conversions_logged=conv_count,
+        watchlist_size=watchlist_size,
+        alerts_active=active,
+        alerts_triggered=triggered,
     )
+
+
+# ---------------------------------------------------------------------------
+# Watchlist
+# ---------------------------------------------------------------------------
+def _watchlist_payload() -> list[dict]:
+    """Return current watchlist with live rates merged in."""
+    with watchlist_lock:
+        pairs = sorted(watchlist)
+
+    items = []
+    for from_c, to_c in pairs:
+        try:
+            data = cache.get_or_fetch(
+                f"latest:{from_c}:{to_c}",
+                lambda fc=from_c, tc=to_c: _fetch_json(
+                    "/latest", {"from": fc, "to": tc}
+                ),
+            )
+            rate = data.get("rates", {}).get(to_c)
+            items.append({
+                "from": from_c,
+                "to": to_c,
+                "rate": rate,
+                "date": data.get("date"),
+            })
+        except requests.RequestException:
+            items.append({"from": from_c, "to": to_c, "error": "rate unavailable"})
+    return items
+
+
+@app.route("/api/watchlist", methods=["GET"])
+def get_watchlist():
+    return jsonify(items=_watchlist_payload())
+
+
+@app.route("/api/watchlist", methods=["POST"])
+def add_to_watchlist():
+    payload = request.get_json(silent=True) or request.form or request.args
+    from_c = (payload.get("from") or "").upper()
+    to_c = (payload.get("to") or "").upper()
+
+    if not from_c or not to_c:
+        return jsonify(error="'from' and 'to' are required"), 400
+    if from_c == to_c:
+        return jsonify(error="'from' and 'to' must differ"), 400
+
+    with watchlist_lock:
+        watchlist.add((from_c, to_c))
+        size = len(watchlist)
+    return jsonify(ok=True, size=size, pair=f"{from_c}->{to_c}"), 201
+
+
+@app.route("/api/watchlist/<from_c>/<to_c>", methods=["DELETE"])
+def remove_from_watchlist(from_c, to_c):
+    from_c, to_c = from_c.upper(), to_c.upper()
+    with watchlist_lock:
+        existed = (from_c, to_c) in watchlist
+        watchlist.discard((from_c, to_c))
+        size = len(watchlist)
+    return jsonify(ok=existed, size=size)
+
+
+# ---------------------------------------------------------------------------
+# "Best time to convert" insight
+# ---------------------------------------------------------------------------
+@app.route("/api/insight")
+def insight():
+    """
+    Compare current rate against the 30-day average and tell the user
+    whether now looks like a relatively good time to convert.
+    Query: ?from=USD&to=EUR
+    """
+    from_c = request.args.get("from", "USD").upper()
+    to_c = request.args.get("to", "EUR").upper()
+
+    if from_c == to_c:
+        return jsonify(error="'from' and 'to' must differ"), 400
+
+    latest = cache.get_or_fetch(
+        f"latest:{from_c}:{to_c}",
+        lambda: _fetch_json("/latest", {"from": from_c, "to": to_c}),
+    )
+    current = latest.get("rates", {}).get(to_c)
+
+    end = date.today()
+    start = end - timedelta(days=30)
+    history_data = cache.get_or_fetch(
+        f"history:{from_c}:{to_c}:30",
+        lambda: _fetch_json(
+            f"/{start.isoformat()}..{end.isoformat()}",
+            {"from": from_c, "to": to_c},
+        ),
+    )
+    points = [
+        r[to_c] for r in history_data.get("rates", {}).values() if to_c in r
+    ]
+
+    if not points or current is None:
+        return jsonify(
+            from_currency=from_c,
+            to_currency=to_c,
+            message="Not enough history yet to make a recommendation.",
+        )
+
+    avg_30d = sum(points) / len(points)
+    pct_vs_avg = ((current - avg_30d) / avg_30d) * 100 if avg_30d else 0.0
+
+    if pct_vs_avg > 1.0:
+        verdict = "good"
+        message = (
+            f"Rate is {pct_vs_avg:.1f}% above the 30-day average - "
+            f"a relatively good time to convert {from_c} to {to_c}."
+        )
+    elif pct_vs_avg < -1.0:
+        verdict = "wait"
+        message = (
+            f"Rate is {abs(pct_vs_avg):.1f}% below the 30-day average - "
+            f"you might want to wait if you can."
+        )
+    else:
+        verdict = "neutral"
+        message = "Rate is close to the 30-day average."
+
+    return jsonify(
+        from_currency=from_c,
+        to_currency=to_c,
+        current=current,
+        avg_30d=round(avg_30d, 6),
+        min_30d=min(points),
+        max_30d=max(points),
+        pct_vs_avg=round(pct_vs_avg, 2),
+        verdict=verdict,
+        message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rate alerts
+# ---------------------------------------------------------------------------
+@app.route("/api/alerts", methods=["GET"])
+def list_alerts():
+    with alerts_lock:
+        items = sorted(alerts.values(), key=lambda a: a["created_at"], reverse=True)
+    return jsonify(alerts=items, total=len(items))
+
+
+@app.route("/api/alerts", methods=["POST"])
+def create_alert():
+    payload = request.get_json(silent=True) or {}
+    from_c = (payload.get("from") or "").upper()
+    to_c = (payload.get("to") or "").upper()
+    op = (payload.get("op") or "above").lower()
+
+    try:
+        threshold = float(payload.get("threshold"))
+    except (TypeError, ValueError):
+        return jsonify(error="'threshold' must be a number"), 400
+
+    if not from_c or not to_c:
+        return jsonify(error="'from' and 'to' are required"), 400
+    if from_c == to_c:
+        return jsonify(error="'from' and 'to' must differ"), 400
+    if op not in ("above", "below"):
+        return jsonify(error="'op' must be 'above' or 'below'"), 400
+
+    alert_id = uuid.uuid4().hex[:8]
+    new_alert = {
+        "id": alert_id,
+        "from": from_c,
+        "to": to_c,
+        "op": op,
+        "threshold": threshold,
+        "created_at": time.time(),
+        "triggered_at": None,
+        "last_rate": None,
+    }
+    with alerts_lock:
+        alerts[alert_id] = new_alert
+    return jsonify(alert=new_alert), 201
+
+
+@app.route("/api/alerts/<alert_id>", methods=["DELETE"])
+def delete_alert(alert_id):
+    with alerts_lock:
+        existed = alerts.pop(alert_id, None) is not None
+    return jsonify(ok=existed)
+
+
+def _check_alerts_once():
+    """Single pass over pending alerts. Pulled out for testability."""
+    with alerts_lock:
+        pending = [a for a in alerts.values() if not a["triggered_at"]]
+
+    if not pending:
+        return
+
+    # Group by 'from' currency to minimize upstream calls.
+    grouped: dict[str, set] = {}
+    for a in pending:
+        grouped.setdefault(a["from"], set()).add(a["to"])
+
+    for from_c, to_set in grouped.items():
+        to_list = ",".join(sorted(to_set))
+        try:
+            data = cache.get_or_fetch(
+                f"latest:{from_c}:{to_list}",
+                lambda fc=from_c, tl=to_list: _fetch_json(
+                    "/latest", {"from": fc, "to": tl}
+                ),
+            )
+        except requests.RequestException:
+            continue  # transient network blip; retry on next cycle
+
+        rates = data.get("rates", {})
+        with alerts_lock:
+            for a in alerts.values():
+                if a["triggered_at"] or a["from"] != from_c:
+                    continue
+                current = rates.get(a["to"])
+                if current is None:
+                    continue
+                a["last_rate"] = current
+                triggered = (
+                    (a["op"] == "above" and current >= a["threshold"])
+                    or (a["op"] == "below" and current <= a["threshold"])
+                )
+                if triggered:
+                    a["triggered_at"] = time.time()
+                    ALERTS_TRIGGERED.labels(
+                        from_currency=a["from"],
+                        to_currency=a["to"],
+                        op=a["op"],
+                    ).inc()
+
+
+def _alerts_loop():
+    """Long-running background loop. Runs in a daemon thread."""
+    while True:
+        try:
+            _check_alerts_once()
+        except Exception:
+            # Never let an exception kill the daemon.
+            pass
+        time.sleep(ALERTS_POLL_SECONDS)
+
+
+def _start_alerts_thread():
+    t = threading.Thread(target=_alerts_loop, name="alerts-checker", daemon=True)
+    t.start()
+
+
+# Start the alerts background thread when the module is imported under
+# gunicorn / `python app.py`. Disabled in tests via env var so that the
+# poller doesn't make real HTTP calls during pytest runs.
+if os.environ.get("DISABLE_BACKGROUND_TASKS") != "1":
+    _start_alerts_thread()
 
 
 # ---------------------------------------------------------------------------

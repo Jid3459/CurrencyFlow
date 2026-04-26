@@ -12,7 +12,15 @@ import pytest
 import responses
 
 import app as app_module
-from app import FRANKFURTER_BASE_URL, app, cache, recent_conversions
+from app import (
+    FRANKFURTER_BASE_URL,
+    _check_alerts_once,
+    alerts,
+    app,
+    cache,
+    recent_conversions,
+    watchlist,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +40,8 @@ def reset_state():
     cache.hits = 0
     cache.misses = 0
     recent_conversions.clear()
+    watchlist.clear()
+    alerts.clear()
     yield
 
 
@@ -269,3 +279,161 @@ def test_cache_stats_reports_hit_rate():
     assert stats["hits"] == 2
     assert stats["misses"] == 1
     assert stats["hit_rate_pct"] == pytest.approx(66.67, abs=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Watchlist
+# ---------------------------------------------------------------------------
+def test_watchlist_add_and_list(client, mocked_frankfurter):
+    add = client.post("/api/watchlist", json={"from": "USD", "to": "EUR"})
+    assert add.status_code == 201
+    assert add.json["size"] == 1
+    assert add.json["pair"] == "USD->EUR"
+
+    listing = client.get("/api/watchlist")
+    assert listing.status_code == 200
+    items = listing.json["items"]
+    assert len(items) == 1
+    assert items[0]["from"] == "USD"
+    assert items[0]["to"] == "EUR"
+    assert items[0]["rate"] == 0.85
+
+
+def test_watchlist_rejects_same_currency(client):
+    response = client.post("/api/watchlist", json={"from": "USD", "to": "USD"})
+    assert response.status_code == 400
+
+
+def test_watchlist_rejects_missing_fields(client):
+    response = client.post("/api/watchlist", json={"from": "USD"})
+    assert response.status_code == 400
+
+
+def test_watchlist_remove(client, mocked_frankfurter):
+    client.post("/api/watchlist", json={"from": "USD", "to": "EUR"})
+    response = client.delete("/api/watchlist/USD/EUR")
+    assert response.status_code == 200
+    assert response.json["ok"] is True
+    assert response.json["size"] == 0
+
+
+def test_watchlist_remove_nonexistent_returns_ok_false(client):
+    response = client.delete("/api/watchlist/USD/JPY")
+    assert response.status_code == 200
+    assert response.json["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# /api/insight
+# ---------------------------------------------------------------------------
+def test_insight_returns_verdict(client, mocked_frankfurter):
+    response = client.get("/api/insight?from=USD&to=EUR")
+    assert response.status_code == 200
+    payload = response.json
+    assert payload["from_currency"] == "USD"
+    assert payload["to_currency"] == "EUR"
+    assert payload["current"] == 0.85
+    assert "verdict" in payload
+    assert payload["verdict"] in ("good", "wait", "neutral")
+
+
+def test_insight_rejects_same_currency(client):
+    response = client.get("/api/insight?from=USD&to=USD")
+    assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# /api/alerts CRUD
+# ---------------------------------------------------------------------------
+def test_alerts_create_and_list(client):
+    create = client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "above", "threshold": 0.95},
+    )
+    assert create.status_code == 201
+    alert = create.json["alert"]
+    assert alert["from"] == "USD"
+    assert alert["op"] == "above"
+    assert alert["threshold"] == 0.95
+    assert alert["triggered_at"] is None
+
+    listing = client.get("/api/alerts")
+    assert listing.status_code == 200
+    assert listing.json["total"] == 1
+
+
+def test_alerts_create_validates_threshold(client):
+    response = client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "above", "threshold": "abc"},
+    )
+    assert response.status_code == 400
+
+
+def test_alerts_create_validates_op(client):
+    response = client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "sideways", "threshold": 1},
+    )
+    assert response.status_code == 400
+
+
+def test_alerts_delete(client):
+    create = client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "above", "threshold": 0.95},
+    )
+    alert_id = create.json["alert"]["id"]
+
+    delete = client.delete(f"/api/alerts/{alert_id}")
+    assert delete.status_code == 200
+    assert delete.json["ok"] is True
+
+    listing = client.get("/api/alerts")
+    assert listing.json["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Background alerts checker
+# ---------------------------------------------------------------------------
+def test_check_alerts_triggers_when_above_threshold(client, mocked_frankfurter):
+    # Mocked rate is USD->EUR = 0.85. Threshold is 0.80, op=above => triggers.
+    client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "above", "threshold": 0.80},
+    )
+
+    _check_alerts_once()
+
+    listing = client.get("/api/alerts")
+    triggered = listing.json["alerts"][0]
+    assert triggered["triggered_at"] is not None
+    assert triggered["last_rate"] == 0.85
+
+
+def test_check_alerts_does_not_trigger_when_below_threshold(client, mocked_frankfurter):
+    # Mocked rate is USD->EUR = 0.85. Threshold is 0.90, op=above => doesn't trigger.
+    client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "above", "threshold": 0.90},
+    )
+
+    _check_alerts_once()
+
+    listing = client.get("/api/alerts")
+    a = listing.json["alerts"][0]
+    assert a["triggered_at"] is None
+    assert a["last_rate"] == 0.85  # we observed it, just didn't trigger
+
+
+def test_check_alerts_below_op(client, mocked_frankfurter):
+    # Mocked rate is 0.85. Threshold 0.90, op=below => triggers.
+    client.post(
+        "/api/alerts",
+        json={"from": "USD", "to": "EUR", "op": "below", "threshold": 0.90},
+    )
+
+    _check_alerts_once()
+
+    listing = client.get("/api/alerts")
+    assert listing.json["alerts"][0]["triggered_at"] is not None

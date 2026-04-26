@@ -15,6 +15,16 @@
     </header>
 
     <main>
+        <!-- Watchlist (pinned pairs) -->
+        <section class="card">
+            <h2>My Watchlist
+                <span class="subtitle">- pinned currency pairs</span>
+            </h2>
+            <div id="watchlist-list" class="watchlist-list">
+                <span class="subtitle">Your watchlist is empty. Convert a currency below and click the star to pin it.</span>
+            </div>
+        </section>
+
         <!-- Conversion card -->
         <section class="card">
             <h2>Convert</h2>
@@ -24,12 +34,35 @@
                 <span class="arrow">&rarr;</span>
                 <select id="to-currency"></select>
                 <button type="submit">Convert</button>
+                <button type="button" id="watch-button" class="ghost-button" title="Add this pair to watchlist">&#9734; Watch</button>
             </form>
             <div class="compare-row">
                 <span class="subtitle">Also compare with:</span>
                 <div class="compare-checkboxes" id="compare-checkboxes"></div>
             </div>
             <div id="convert-result" class="result"></div>
+            <div id="insight-badge" class="insight-badge"></div>
+        </section>
+
+        <!-- Rate Alerts -->
+        <section class="card">
+            <h2>Rate Alerts
+                <span class="subtitle">- get notified when a rate crosses a threshold</span>
+            </h2>
+            <form id="alert-form" class="alert-form">
+                <select id="alert-from" class="inline-select"></select>
+                <span class="arrow">&rarr;</span>
+                <select id="alert-to" class="inline-select"></select>
+                <select id="alert-op" class="inline-select">
+                    <option value="above">goes above</option>
+                    <option value="below">goes below</option>
+                </select>
+                <input type="number" id="alert-threshold" step="any" placeholder="e.g. 0.95" required>
+                <button type="submit">Create Alert</button>
+            </form>
+            <div id="alerts-list" class="alerts-list">
+                <span class="subtitle">No active alerts.</span>
+            </div>
         </section>
 
         <!-- Live rates table -->
