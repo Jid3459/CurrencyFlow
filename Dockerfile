@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# CurrencyFlow — Docker image
+# CurrencyFlow - Docker image
 # Builds a small production image with gunicorn serving the Flask app.
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 """
-CurrencyFlow — Live Currency Exchange & Conversion Dashboard.
+CurrencyFlow - Live Currency Exchange & Conversion Dashboard.
 
 Backend Flask service. Fetches data from the free Frankfurter API
 (https://www.frankfurter.app), exposes a clean JSON API for the frontend,
@@ -150,7 +150,7 @@ def _fetch_json(path: str, params: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTTP middleware — record latency + count for every request.
+# HTTP middleware - record latency + count for every request.
 # ---------------------------------------------------------------------------
 @app.before_request
 def _start_timer():
@@ -160,7 +160,7 @@ def _start_timer():
 @app.after_request
 def _record_metrics(response):
     # url_rule.rule gives us the route pattern (e.g. "/api/rates") instead of
-    # the literal URL — keeps label cardinality bounded.
+    # the literal URL - keeps label cardinality bounded.
     endpoint = request.url_rule.rule if request.url_rule else request.path
     elapsed = time.time() - getattr(g, "start_time", time.time())
     HTTP_LATENCY.labels(endpoint=endpoint).observe(elapsed)
@@ -173,7 +173,7 @@ def _record_metrics(response):
 
 
 # ---------------------------------------------------------------------------
-# Page route — serves the dashboard HTML
+# Page route - serves the dashboard HTML
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
@@ -182,7 +182,7 @@ def index():
 
 
 # ---------------------------------------------------------------------------
-# Health check — useful for Docker, Jenkins, monitoring later on
+# Health check - useful for Docker, Jenkins, monitoring later on
 # ---------------------------------------------------------------------------
 @app.route("/health")
 def health():
@@ -395,7 +395,7 @@ def recent_conversions_endpoint():
 
 @app.route("/api/stats")
 def stats():
-    """Internal stats — cache + conversion counters (used by the frontend)."""
+    """Internal stats - cache + conversion counters (used by the frontend)."""
     with conversions_lock:
         conv_count = len(recent_conversions)
     return jsonify(

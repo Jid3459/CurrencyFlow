@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# CurrencyFlow — Multi-container orchestration
+# CurrencyFlow - Multi-container orchestration
 #
 # Brings up:
 #   - app        : the Flask dashboard (built from local Dockerfile)
@@ -50,7 +50,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Default credentials — change these for any non-demo deployment.
+      # Default credentials - change these for any non-demo deployment.
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"

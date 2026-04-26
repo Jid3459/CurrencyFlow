@@ -8,7 +8,7 @@ global:
   evaluation_interval: 15s    # how often it evaluates alerting rules
 
 scrape_configs:
-  # Prometheus scrapes itself — useful for sanity-checking the whole pipeline.
+  # Prometheus scrapes itself - useful for sanity-checking the whole pipeline.
   - job_name: prometheus
     static_configs:
       - targets:

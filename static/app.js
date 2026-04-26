@@ -22,7 +22,7 @@ function fillSelect(selectEl, currencies, defaultValue) {
         .forEach(([code, name]) => {
             const opt = document.createElement("option");
             opt.value = code;
-            opt.textContent = `${code} — ${name}`;
+            opt.textContent = `${code} - ${name}`;
             if (code === defaultValue) opt.selected = true;
             selectEl.appendChild(opt);
         });
@@ -49,7 +49,7 @@ async function refreshStats() {
             <span class="stat-pill">Conversions <strong>${data.conversions_logged}</strong></span>
         `;
     } catch (err) {
-        // Silent — stats strip is optional.
+        // Silent - stats strip is optional.
     }
 }
 
@@ -134,7 +134,7 @@ async function handleConvert(event) {
         }
         resultEl.innerHTML = html;
 
-        // Refresh dependent panels — conversions feed Popular Pairs, and a fresh
+        // Refresh dependent panels - conversions feed Popular Pairs, and a fresh
         // /api/convert call moves the cache stats too.
         loadRecent();
         refreshStats();
@@ -204,7 +204,7 @@ async function loadRecent() {
                 .join("");
         }
     } catch (err) {
-        // Silent failure — recent list is non-critical.
+        // Silent failure - recent list is non-critical.
     }
 }
 
@@ -282,7 +282,7 @@ async function init() {
             $(id).addEventListener("change", loadHistory)
         );
 
-        // First load — run in parallel.
+        // First load - run in parallel.
         await Promise.all([
             loadRates("USD"),
             loadHistory(),
