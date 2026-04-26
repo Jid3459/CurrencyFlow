@@ -146,6 +146,7 @@
         "defaults": {
           "unit": "short",
           "decimals": 0,
+          "noValue": "0",
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
@@ -263,16 +264,18 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "topk(10, currencyflow_conversions_total)",
+          "expr": "topk(10, sum by (from_currency, to_currency) (currencyflow_conversions_total))",
           "refId": "A",
           "legendFormat": "{{from_currency}} -> {{to_currency}}",
-          "instant": true
+          "range": true,
+          "instant": false
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "decimals": 0,
+          "noValue": "0",
           "color": { "mode": "continuous-GrYlRd" },
           "thresholds": {
             "mode": "absolute",
