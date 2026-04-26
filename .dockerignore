@@ -1,0 +1,35 @@
+# Don't ship local development noise into the image.
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Git metadata
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment
+.env
+.env.local
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker (no recursion)
+Dockerfile
+.dockerignore
+
+# Logs
+*.log

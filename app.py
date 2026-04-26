@@ -10,7 +10,8 @@ Features:
   - Top Movers: biggest currency movers vs. a base over a window
   - Recent Conversions log (in-memory ring buffer) + popular pairs
   - In-memory TTL cache for upstream calls with hit/miss counters
-  - /api/stats exposes cache + log metrics (will feed Prometheus in Step 3)
+  - /api/stats exposes cache + log counters (used by the frontend)
+  - /metrics exposes Prometheus-formatted metrics for scraping
 """
 
 import threading
@@ -19,7 +20,13 @@ from collections import Counter, deque
 from datetime import date, timedelta
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter as PromCounter,
+    Histogram,
+    generate_latest,
+)
 
 app = Flask(__name__)
 
@@ -29,12 +36,50 @@ FRANKFURTER_BASE_URL = "https://api.frankfurter.app"
 # Network call timeout (seconds). Keeps the app responsive if upstream is slow.
 HTTP_TIMEOUT = 10
 
-# Cache TTL for upstream responses (seconds). ECB data updates once a day, so
-# 60s is a safe balance between freshness and reducing upstream load.
+# Cache TTL for upstream responses (seconds).
 CACHE_TTL_SECONDS = 60
 
 # Maximum recent conversions retained in memory.
 RECENT_CONVERSIONS_MAX = 100
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics. These are Counters (only go up) and Histograms (record
+# distributions). Prometheus scrapes /metrics every few seconds and stores them.
+# Grafana then queries Prometheus to draw dashboards.
+# ---------------------------------------------------------------------------
+HTTP_REQUESTS = PromCounter(
+    "currencyflow_http_requests_total",
+    "Total HTTP requests served by CurrencyFlow.",
+    ["method", "endpoint", "status"],
+)
+
+HTTP_LATENCY = Histogram(
+    "currencyflow_http_request_duration_seconds",
+    "HTTP request latency in seconds.",
+    ["endpoint"],
+)
+
+CONVERSIONS = PromCounter(
+    "currencyflow_conversions_total",
+    "Total currency conversions performed.",
+    ["from_currency", "to_currency"],
+)
+
+CACHE_HITS = PromCounter(
+    "currencyflow_cache_hits_total",
+    "Number of times a cached upstream response was served.",
+)
+
+CACHE_MISSES = PromCounter(
+    "currencyflow_cache_misses_total",
+    "Number of times the cache missed and we fetched from upstream.",
+)
+
+UPSTREAM_LATENCY = Histogram(
+    "currencyflow_upstream_request_duration_seconds",
+    "Latency of calls to the Frankfurter upstream API.",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +92,8 @@ class TTLCache:
         self.ttl = ttl_seconds
         self._store: dict = {}
         self._lock = threading.Lock()
+        # Internal counters mirror the Prometheus counters so /api/stats can
+        # read them directly without poking Prometheus internals.
         self.hits = 0
         self.misses = 0
 
@@ -57,8 +104,10 @@ class TTLCache:
             entry = self._store.get(key)
             if entry and entry[1] > now:
                 self.hits += 1
+                CACHE_HITS.inc()
                 return entry[0]
             self.misses += 1
+            CACHE_MISSES.inc()
 
         # Fetch outside the lock so other requests aren't blocked on network IO.
         value = fetch_fn()
@@ -87,13 +136,40 @@ conversions_lock = threading.Lock()
 
 def _fetch_json(path: str, params: dict | None = None) -> dict:
     """Call Frankfurter and return JSON. Raises on HTTP errors."""
-    response = requests.get(
-        f"{FRANKFURTER_BASE_URL}{path}",
-        params=params or {},
-        timeout=HTTP_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
+    start = time.time()
+    try:
+        response = requests.get(
+            f"{FRANKFURTER_BASE_URL}{path}",
+            params=params or {},
+            timeout=HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()
+    finally:
+        UPSTREAM_LATENCY.observe(time.time() - start)
+
+
+# ---------------------------------------------------------------------------
+# HTTP middleware — record latency + count for every request.
+# ---------------------------------------------------------------------------
+@app.before_request
+def _start_timer():
+    g.start_time = time.time()
+
+
+@app.after_request
+def _record_metrics(response):
+    # url_rule.rule gives us the route pattern (e.g. "/api/rates") instead of
+    # the literal URL — keeps label cardinality bounded.
+    endpoint = request.url_rule.rule if request.url_rule else request.path
+    elapsed = time.time() - getattr(g, "start_time", time.time())
+    HTTP_LATENCY.labels(endpoint=endpoint).observe(elapsed)
+    HTTP_REQUESTS.labels(
+        method=request.method,
+        endpoint=endpoint,
+        status=str(response.status_code),
+    ).inc()
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +187,15 @@ def index():
 @app.route("/health")
 def health():
     return jsonify(status="ok"), 200
+
+
+# ---------------------------------------------------------------------------
+# Prometheus scrape endpoint
+# ---------------------------------------------------------------------------
+@app.route("/metrics")
+def metrics():
+    """Expose all registered Prometheus metrics in text format."""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +244,6 @@ def convert():
     if not targets:
         return jsonify(error="at least one target currency required"), 400
 
-    # Anything other than the source currency must be fetched from upstream.
     fetch_targets = sorted({c for c in targets if c != from_currency})
 
     upstream_rates: dict = {}
@@ -187,7 +271,7 @@ def convert():
             continue
         results.append({"to": to_c, "rate": rate, "converted": rate * amount})
 
-    # Log each successful conversion to the recent buffer.
+    # Log each successful conversion to the recent buffer + Prometheus counter.
     timestamp = time.time()
     with conversions_lock:
         for r in results:
@@ -201,6 +285,9 @@ def convert():
                 "rate": r["rate"],
                 "timestamp": timestamp,
             })
+            CONVERSIONS.labels(
+                from_currency=from_currency, to_currency=r["to"]
+            ).inc()
 
     return jsonify(
         from_currency=from_currency,
@@ -268,8 +355,6 @@ def movers():
         past_rate = past_rates.get(code)
         if past_rate in (None, 0):
             continue
-        # Positive % means the foreign currency strengthened vs the base.
-        # (rate today < rate past => 1 base buys less foreign => foreign got stronger)
         change_pct = ((past_rate - today_rate) / past_rate) * 100
         movers_list.append({
             "currency": code,
@@ -302,7 +387,7 @@ def recent_conversions_endpoint():
     ]
 
     return jsonify(
-        recent=list(reversed(items[-25:])),  # most recent first
+        recent=list(reversed(items[-25:])),
         popular=popular,
         total=len(items),
     )
@@ -310,10 +395,7 @@ def recent_conversions_endpoint():
 
 @app.route("/api/stats")
 def stats():
-    """
-    Internal stats endpoint — exposes cache + conversion counters.
-    This is the precursor to /metrics (Prometheus) in Step 3.
-    """
+    """Internal stats — cache + conversion counters (used by the frontend)."""
     with conversions_lock:
         conv_count = len(recent_conversions)
     return jsonify(
