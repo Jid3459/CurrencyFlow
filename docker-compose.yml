@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# CurrencyFlow — Multi-container orchestration
+#
+# Brings up:
+#   - app        : the Flask dashboard (built from local Dockerfile)
+#   - prometheus : scrapes /metrics from the app every 15s
+#   - grafana    : visualizes the metrics (auto-wired to Prometheus)
+#
+# Bring everything up:    docker compose up -d
+# View logs:              docker compose logs -f
+# Stop everything:        docker compose down
+# Stop + delete data:     docker compose down -v
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    build: .
+    image: currencyflow:latest
+    container_name: currencyflow-app
+    ports:
+      - "5000:5000"
+    networks:
+      - currencyflow-net
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: currencyflow-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      # Mount our scrape config (read-only) into the container.
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Persist Prometheus' time-series data across restarts.
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    networks:
+      - currencyflow-net
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: currencyflow-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Default credentials — change these for any non-demo deployment.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      # Persist Grafana settings + dashboards across restarts.
+      - grafana-data:/var/lib/grafana
+      # Auto-provision the Prometheus data source on first boot.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - currencyflow-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+networks:
+  currencyflow-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

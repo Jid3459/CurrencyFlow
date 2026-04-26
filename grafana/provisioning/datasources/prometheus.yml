@@ -1,0 +1,17 @@
+# ---------------------------------------------------------------------------
+# Auto-provision the Prometheus data source in Grafana.
+# Loaded on first boot so we don't have to click through the UI.
+# ---------------------------------------------------------------------------
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus      # stable UID — referenced by dashboards in Step 5
+    access: proxy        # Grafana backend talks to Prometheus, not the browser
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s  # match Prometheus scrape interval

@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# Prometheus configuration for CurrencyFlow.
+# Scrapes the Flask app's /metrics endpoint every 15s.
+# ---------------------------------------------------------------------------
+
+global:
+  scrape_interval: 15s        # how often Prometheus pulls metrics
+  evaluation_interval: 15s    # how often it evaluates alerting rules
+
+scrape_configs:
+  # Prometheus scrapes itself — useful for sanity-checking the whole pipeline.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  # Scrape the CurrencyFlow Flask app. The hostname "app" is the docker-compose
+  # service name; Docker's internal DNS resolves it to the app container.
+  - job_name: currencyflow
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - app:5000
+        labels:
+          service: currencyflow
+          env: dev
