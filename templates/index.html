@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CurrencyFlow — Live Currency Exchange Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>CurrencyFlow</h1>
+        <p class="tagline">Live exchange rates &amp; conversion</p>
+        <div class="stats-strip" id="stats-strip"></div>
+    </header>
+
+    <main>
+        <!-- Conversion card -->
+        <section class="card">
+            <h2>Convert</h2>
+            <form id="convert-form" class="convert-form">
+                <input type="number" id="amount" value="100" step="any" min="0" required>
+                <select id="from-currency"></select>
+                <span class="arrow">&rarr;</span>
+                <select id="to-currency"></select>
+                <button type="submit">Convert</button>
+            </form>
+            <div class="compare-row">
+                <span class="subtitle">Also compare with:</span>
+                <div class="compare-checkboxes" id="compare-checkboxes"></div>
+            </div>
+            <div id="convert-result" class="result"></div>
+        </section>
+
+        <!-- Live rates table -->
+        <section class="card">
+            <h2>Live Rates
+                <span class="subtitle">— against
+                    <select id="base-currency" class="inline-select"></select>
+                </span>
+            </h2>
+            <div id="rates-table" class="rates-table">Loading rates&hellip;</div>
+        </section>
+
+        <!-- Top Movers -->
+        <section class="card">
+            <h2>Top Movers
+                <span class="subtitle">vs.
+                    <select id="movers-base" class="inline-select"></select>
+                    over
+                    <select id="movers-days" class="inline-select">
+                        <option value="1">1 day</option>
+                        <option value="7" selected>7 days</option>
+                        <option value="30">30 days</option>
+                    </select>
+                </span>
+            </h2>
+            <div id="movers-list" class="movers-list">Loading&hellip;</div>
+        </section>
+
+        <!-- Popular Pairs / Recent Conversions -->
+        <section class="card">
+            <h2>Popular Pairs
+                <span class="subtitle">— from this session</span>
+            </h2>
+            <div id="popular-list" class="popular-list">No conversions yet. Try converting above.</div>
+            <details class="recent-details">
+                <summary>Recent conversions</summary>
+                <div id="recent-list" class="recent-list"></div>
+            </details>
+        </section>
+
+        <!-- Historical trend chart -->
+        <section class="card">
+            <h2>Historical Trend
+                <span class="subtitle">
+                    <select id="hist-from" class="inline-select"></select>
+                    &rarr;
+                    <select id="hist-to" class="inline-select"></select>
+                    over
+                    <select id="hist-days" class="inline-select">
+                        <option value="7">7 days</option>
+                        <option value="30" selected>30 days</option>
+                        <option value="90">90 days</option>
+                        <option value="180">180 days</option>
+                    </select>
+                </span>
+            </h2>
+            <canvas id="history-chart" height="120"></canvas>
+        </section>
+    </main>
+
+    <footer>
+        <p>Data: <a href="https://www.frankfurter.app" target="_blank" rel="noopener">Frankfurter</a> (European Central Bank)</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
