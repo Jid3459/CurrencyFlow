@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Tell Grafana to load every JSON dashboard found at the configured path.
+# Mounted into the container by docker-compose.yml at this same location.
+# ---------------------------------------------------------------------------
+
+apiVersion: 1
+
+providers:
+  - name: CurrencyFlow
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
