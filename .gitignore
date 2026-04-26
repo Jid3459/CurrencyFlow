@@ -5,7 +5,11 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
+
+# SonarQube scanner workdir
+.scannerwork/
 
 # IDE
 .vscode/

@@ -6,10 +6,11 @@
 #   - prometheus : scrapes /metrics from the app every 15s
 #   - grafana    : visualizes the metrics (auto-wired to Prometheus)
 #
-# Bring everything up:    docker compose up -d
-# View logs:              docker compose logs -f
-# Stop everything:        docker compose down
-# Stop + delete data:     docker compose down -v
+# Bring everything up (default stack):    docker compose up -d
+# Bring up + SonarQube (heavy ~2 GB):     docker compose --profile quality up -d
+# View logs:                              docker compose logs -f
+# Stop everything:                        docker compose down
+# Stop + delete data:                     docker compose down -v
 # ---------------------------------------------------------------------------
 
 services:
@@ -66,6 +67,29 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # -------------------------------------------------------------------------
+  # SonarQube - code quality + security scanner.
+  # Heavy (~2 GB RAM). Only starts when invoked with --profile quality.
+  # -------------------------------------------------------------------------
+  sonarqube:
+    image: sonarqube:10.7-community
+    container_name: currencyflow-sonarqube
+    profiles:
+      - quality
+    ports:
+      - "9000:9000"
+    environment:
+      # Embedded H2 database. Fine for local/demo use; production should use
+      # an external Postgres (SonarQube refuses to run with H2 in prod mode).
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    networks:
+      - currencyflow-net
+    restart: unless-stopped
+
 networks:
   currencyflow-net:
     driver: bridge
@@ -73,3 +97,6 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-logs:
