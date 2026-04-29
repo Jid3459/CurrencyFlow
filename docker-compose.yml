@@ -8,6 +8,8 @@
 #
 # Bring everything up (default stack):    docker compose up -d
 # Bring up + SonarQube (heavy ~2 GB):     docker compose --profile quality up -d
+# Bring up + Jenkins (~500 MB):           docker compose --profile ci up -d
+# Bring up everything:                    docker compose --profile quality --profile ci up -d
 # View logs:                              docker compose logs -f
 # Stop everything:                        docker compose down
 # Stop + delete data:                     docker compose down -v
@@ -90,6 +92,31 @@ services:
       - currencyflow-net
     restart: unless-stopped
 
+  # -------------------------------------------------------------------------
+  # Jenkins - CI/CD orchestrator. Polls GitHub, runs the Jenkinsfile pipeline.
+  # Custom image bakes in Python, Docker CLI, and sonar-scanner.
+  # Runs as root to access the host Docker socket for image builds.
+  # Only starts when invoked with --profile ci.
+  # -------------------------------------------------------------------------
+  jenkins:
+    build:
+      context: ./jenkins
+    image: currencyflow-jenkins:latest
+    container_name: currencyflow-jenkins
+    profiles:
+      - ci
+    user: root
+    ports:
+      - "8080:8080"      # Jenkins UI
+      - "50000:50000"    # agent communication
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      # Mount the host Docker socket so Jenkins can build/run/push images.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - currencyflow-net
+    restart: unless-stopped
+
 networks:
   currencyflow-net:
     driver: bridge
@@ -100,3 +127,4 @@ volumes:
   sonarqube-data:
   sonarqube-extensions:
   sonarqube-logs:
+  jenkins-data:
