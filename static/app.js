@@ -195,9 +195,12 @@ async function loadInsight(from, to) {
             badge.innerHTML = "";
             return;
         }
-        const cls = data.verdict === "good" ? "insight-good"
-            : data.verdict === "wait" ? "insight-wait"
-            : "insight-neutral";
+        const verdictClassMap = {
+            good: "insight-good",
+            wait: "insight-wait",
+            neutral: "insight-neutral",
+        };
+        const cls = verdictClassMap[data.verdict] || "insight-neutral";
         badge.className = `insight-badge ${cls}`;
         badge.innerHTML = `<strong>Insight:</strong> ${data.message}`;
     } catch (_) {
@@ -320,6 +323,15 @@ async function loadRecent() {
 }
 
 // ---------- Rate Alerts ----------
+function renderTriggeredStatus(a) {
+    return `<span class="alert-status triggered">Triggered ${timeAgo(a.triggered_at)} at rate ${fmt(a.last_rate, 4)}</span>`;
+}
+
+function renderActiveStatus(a) {
+    const tail = a.last_rate != null ? ` &middot; last seen ${fmt(a.last_rate, 4)}` : "";
+    return `<span class="alert-status active">Watching${tail}</span>`;
+}
+
 async function handleCreateAlert(event) {
     event.preventDefault();
     const body = {
@@ -352,8 +364,8 @@ async function loadAlerts() {
             const triggered = !!a.triggered_at;
             const cls = triggered ? "alert-row triggered" : "alert-row";
             const status = triggered
-                ? `<span class="alert-status triggered">Triggered ${timeAgo(a.triggered_at)} at rate ${fmt(a.last_rate, 4)}</span>`
-                : `<span class="alert-status active">Watching${a.last_rate != null ? ` &middot; last seen ${fmt(a.last_rate, 4)}` : ""}</span>`;
+                ? renderTriggeredStatus(a)
+                : renderActiveStatus(a);
             const cell = document.createElement("div");
             cell.className = cls;
             cell.innerHTML = `

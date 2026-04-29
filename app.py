@@ -50,6 +50,9 @@ RECENT_CONVERSIONS_MAX = 100
 # Background alert checker poll interval (seconds).
 ALERTS_POLL_SECONDS = 60
 
+# Standard validation error messages (extracted to avoid duplicate-literal lint).
+ERR_FROM_TO_MUST_DIFFER = "'from' and 'to' must differ"
+
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics.
@@ -448,7 +451,7 @@ def add_to_watchlist():
     if not from_c or not to_c:
         return jsonify(error="'from' and 'to' are required"), 400
     if from_c == to_c:
-        return jsonify(error="'from' and 'to' must differ"), 400
+        return jsonify(error=ERR_FROM_TO_MUST_DIFFER), 400
 
     with watchlist_lock:
         watchlist.add((from_c, to_c))
@@ -480,7 +483,7 @@ def insight():
     to_c = request.args.get("to", "EUR").upper()
 
     if from_c == to_c:
-        return jsonify(error="'from' and 'to' must differ"), 400
+        return jsonify(error=ERR_FROM_TO_MUST_DIFFER), 400
 
     latest = cache.get_or_fetch(
         f"latest:{from_c}:{to_c}",
@@ -565,7 +568,7 @@ def create_alert():
     if not from_c or not to_c:
         return jsonify(error="'from' and 'to' are required"), 400
     if from_c == to_c:
-        return jsonify(error="'from' and 'to' must differ"), 400
+        return jsonify(error=ERR_FROM_TO_MUST_DIFFER), 400
     if op not in ("above", "below"):
         return jsonify(error="'op' must be 'above' or 'below'"), 400
 
@@ -592,19 +595,45 @@ def delete_alert(alert_id):
     return jsonify(ok=existed)
 
 
-def _check_alerts_once():
-    """Single pass over pending alerts. Pulled out for testability."""
+def _group_pending_by_from() -> dict[str, set]:
+    """Group active (not yet triggered) alerts by their 'from' currency."""
     with alerts_lock:
         pending = [a for a in alerts.values() if not a["triggered_at"]]
-
-    if not pending:
-        return
-
-    # Group by 'from' currency to minimize upstream calls.
     grouped: dict[str, set] = {}
     for a in pending:
         grouped.setdefault(a["from"], set()).add(a["to"])
+    return grouped
 
+
+def _alert_should_trigger(alert: dict, current_rate: float) -> bool:
+    """Return True if `current_rate` satisfies the alert's threshold/op."""
+    if alert["op"] == "above":
+        return current_rate >= alert["threshold"]
+    return current_rate <= alert["threshold"]
+
+
+def _evaluate_alerts_for(from_c: str, rates: dict) -> None:
+    """Apply observed rates to every pending alert with this 'from' currency."""
+    with alerts_lock:
+        for a in alerts.values():
+            if a["triggered_at"] or a["from"] != from_c:
+                continue
+            current = rates.get(a["to"])
+            if current is None:
+                continue
+            a["last_rate"] = current
+            if _alert_should_trigger(a, current):
+                a["triggered_at"] = time.time()
+                ALERTS_TRIGGERED.labels(
+                    from_currency=a["from"],
+                    to_currency=a["to"],
+                    op=a["op"],
+                ).inc()
+
+
+def _check_alerts_once():
+    """Single pass over pending alerts. Pulled out for testability."""
+    grouped = _group_pending_by_from()
     for from_c, to_set in grouped.items():
         to_list = ",".join(sorted(to_set))
         try:
@@ -616,27 +645,7 @@ def _check_alerts_once():
             )
         except requests.RequestException:
             continue  # transient network blip; retry on next cycle
-
-        rates = data.get("rates", {})
-        with alerts_lock:
-            for a in alerts.values():
-                if a["triggered_at"] or a["from"] != from_c:
-                    continue
-                current = rates.get(a["to"])
-                if current is None:
-                    continue
-                a["last_rate"] = current
-                triggered = (
-                    (a["op"] == "above" and current >= a["threshold"])
-                    or (a["op"] == "below" and current <= a["threshold"])
-                )
-                if triggered:
-                    a["triggered_at"] = time.time()
-                    ALERTS_TRIGGERED.labels(
-                        from_currency=a["from"],
-                        to_currency=a["to"],
-                        op=a["op"],
-                    ).inc()
+        _evaluate_alerts_for(from_c, data.get("rates", {}))
 
 
 def _alerts_loop():
