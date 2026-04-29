@@ -23,6 +23,9 @@ pipeline {
         timestamps()
         timeout(time: 15, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
+        // Prevent two builds from racing on the Deploy stage
+        // (which removes + recreates the same container).
+        disableConcurrentBuilds()
     }
 
     environment {
