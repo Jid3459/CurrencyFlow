@@ -398,6 +398,14 @@ async function loadHistory() {
 
         const ctx = $("history-chart").getContext("2d");
         if (historyChart) historyChart.destroy();
+
+        // Build a gradient fill so the chart has some visual weight without
+        // being heavy. Recreated each render so it tracks the current canvas size.
+        const canvasHeight = ctx.canvas.height || 320;
+        const gradient = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+        gradient.addColorStop(0, "rgba(124, 92, 255, 0.35)");
+        gradient.addColorStop(1, "rgba(124, 92, 255, 0.00)");
+
         historyChart = new Chart(ctx, {
             type: "line",
             data: {
@@ -405,19 +413,67 @@ async function loadHistory() {
                 datasets: [{
                     label: `${from} -> ${to}`,
                     data: values,
-                    borderColor: "#4f8cff",
-                    backgroundColor: "rgba(79, 140, 255, 0.15)",
-                    tension: 0.25,
+                    borderColor: "#9077ff",
+                    backgroundColor: gradient,
+                    borderWidth: 2,
+                    tension: 0.3,
                     fill: true,
-                    pointRadius: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBackgroundColor: "#9077ff",
+                    pointHoverBorderColor: "#ffffff",
+                    pointHoverBorderWidth: 2,
                 }],
             },
             options: {
                 responsive: true,
-                plugins: { legend: { labels: { color: "#e6edf6" } } },
+                maintainAspectRatio: false,
+                interaction: { mode: "index", intersect: false },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: "#e6ebf6",
+                            font: { family: "Inter, sans-serif", size: 12, weight: "500" },
+                            boxWidth: 12,
+                            boxHeight: 12,
+                            usePointStyle: true,
+                            pointStyle: "circle",
+                        },
+                    },
+                    tooltip: {
+                        backgroundColor: "rgba(15, 21, 48, 0.95)",
+                        borderColor: "#232b52",
+                        borderWidth: 1,
+                        titleColor: "#e6ebf6",
+                        bodyColor: "#e6ebf6",
+                        titleFont: { family: "Inter, sans-serif", weight: "600" },
+                        bodyFont: { family: "Inter, sans-serif" },
+                        padding: 10,
+                        cornerRadius: 8,
+                        displayColors: false,
+                    },
+                },
                 scales: {
-                    x: { ticks: { color: "#8aa0c2" }, grid: { color: "#2a3550" } },
-                    y: { ticks: { color: "#8aa0c2" }, grid: { color: "#2a3550" } },
+                    x: {
+                        ticks: {
+                            color: "#7a85a8",
+                            font: { family: "Inter, sans-serif", size: 11 },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 8,
+                        },
+                        grid: { color: "rgba(35, 43, 82, 0.5)", drawTicks: false },
+                        border: { display: false },
+                    },
+                    y: {
+                        ticks: {
+                            color: "#7a85a8",
+                            font: { family: "Inter, sans-serif", size: 11 },
+                            padding: 6,
+                        },
+                        grid: { color: "rgba(35, 43, 82, 0.5)", drawTicks: false },
+                        border: { display: false },
+                    },
                 },
             },
         });
