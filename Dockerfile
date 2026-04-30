@@ -6,7 +6,6 @@
 
 FROM python:3.13-slim
 
-# Don't write .pyc files; flush stdout/stderr immediately so Docker logs work.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -36,11 +35,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request, sys; \
 sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health', timeout=3).status == 200 else 1)"
 
-# Production WSGI server. We run 1 worker x 8 threads (instead of multiple
-# workers) so that in-memory state - watchlist, alerts, recent conversions,
-# cache - is shared across all concurrent requests. Multiple gunicorn workers
-# fork separate memory spaces, which would split that state. To scale beyond
-# 1 instance, move state to Redis/Postgres and bump workers.
+
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:5000", \
      "--workers", "1", \

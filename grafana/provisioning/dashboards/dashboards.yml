@@ -1,7 +1,3 @@
-# ---------------------------------------------------------------------------
-# Tell Grafana to load every JSON dashboard found at the configured path.
-# Mounted into the container by docker-compose.yml at this same location.
-# ---------------------------------------------------------------------------
 
 apiVersion: 1
 
