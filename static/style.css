@@ -1,5 +1,5 @@
 :root {
-    --bg: #a0aacb;
+    --bg: #000207;
     --bg-soft: #0f1530;
     --card: #141a36;
     --card-hover: #161e3f;
@@ -74,7 +74,7 @@ header h1 {
     font-size: 1.85rem;
     font-weight: 700;
     letter-spacing: -0.02em;
-    color: var(--text);
+    color: var(--danger);
 }
 
 .tagline {
